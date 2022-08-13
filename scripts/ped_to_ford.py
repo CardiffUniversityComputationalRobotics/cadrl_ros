@@ -9,7 +9,7 @@ from pedsim_msgs.msg import AgentStates
 class Transformer:
     def __init__(self):
 
-        self.task_mode = rospy.get_param("task_mode", "scenario")
+        self.task_mode = rospy.get_param("~task_mode", "scenario")
         # Check if using scripted trajectories or pedsim
         if self.task_mode != "scenario":
             self.pedsim_sub = rospy.Subscriber(

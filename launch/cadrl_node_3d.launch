@@ -1,10 +1,11 @@
-<?xml version="1.0" encoding="UTF-8"?>
 <launch>
 
     <arg name="robot_speed" default="0.34" />
 
     <node pkg="cadrl_ros" type="cadrl_node_3d.py" name="cadrl_node" output="screen" ns="/cadrl">
 
+
+        <!-- PUBLISHED TOPICS -->
         <remap from="~other_vels" to="other_vels" />
         <remap from="~nn_cmd_vel" to="/cmd_vel" />
         <remap from="~pose_marker" to="pose_marker" />
@@ -13,6 +14,8 @@
         <remap from="~agent_marker" to="other_agents_marker" />
         <remap from="~agent_markers" to="other_agents_markers" />
 
+
+        <!-- SUBSCRIBED TOPICS -->
         <remap from="~pose" to="/odom" />
         <remap from="~velocity" to="velocity" />
         <remap from="~safe_actions" to="local_path_finder/safe_actions" />
@@ -26,7 +29,9 @@
     </node>
 
     <!-- pedsim agent state to cluster msg converter -->
-    <node pkg="cadrl_ros" type="ped_to_ford.py" name="ped_to_ford" output="screen"></node>
+    <node pkg="cadrl_ros" type="ped_to_ford.py" name="ped_to_ford" output="screen">
+        <arg name="task_mode" value="scenario" />
+    </node>
 
 
 </launch>
