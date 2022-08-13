@@ -9,16 +9,16 @@ from pedsim_msgs.msg import AgentStates
 class Transformer:
     def __init__(self):
 
-        self.task_mode = rospy.get_param("~task_mode", "scenario")
+        # self.task_mode = rospy.get_param("~task_mode", "scenario")
         # Check if using scripted trajectories or pedsim
-        if self.task_mode != "scenario":
-            self.pedsim_sub = rospy.Subscriber(
-                "/pedsim_simulator/simulated_agents", AgentStates, self.transPedMsg
-            )
-        else:
-            self.actors_sub = rospy.Subscriber(
-                "/gazebo/model_states", ModelStates, self.transGazToCluster
-            )
+        # if self.task_mode != "scenario":
+        self.pedsim_sub = rospy.Subscriber(
+            "/pedsim_simulator/simulated_agents", AgentStates, self.transPedMsg
+        )
+        # else:
+        #     self.actors_sub = rospy.Subscriber(
+        #         "/gazebo/model_states", ModelStates, self.transGazToCluster
+        #     )
         self.clusters_pub = rospy.Publisher("/clusters", Clusters, queue_size=1)
 
     def transPedMsg(self, msg):
