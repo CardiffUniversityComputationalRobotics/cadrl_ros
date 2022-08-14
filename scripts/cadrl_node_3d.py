@@ -2,7 +2,7 @@
 
 import rospy
 import sys
-from std_msgs.msg import Float32, ColorRGBA, Int32, String
+from std_msgs.msg import Float32, ColorRGBA, Int32, String, Bool
 from geometry_msgs.msg import PoseStamped, Twist, Vector3, Point
 from ford_msgs.msg import PedTrajVec, NNActions, PlannerMode, Clusters
 from visualization_msgs.msg import Marker, MarkerArray
@@ -25,7 +25,7 @@ import agent
 import util
 from nav_msgs.msg import Odometry, Path
 
-PED_RADIUS = 0.3
+PED_RADIUS = 0.35
 # angle_1 - angle_2
 # contains direction in range [-3.14, 3.14]
 def find_angle_diff(angle_1, angle_2):
@@ -70,7 +70,7 @@ class NN_tb3:
         self.desired_action = np.zeros((2,))
 
         # handle obstacles close to vehicle's front
-        self.stop_moving_flag = False
+        self.stop_moving_flag = True
         self.d_min = 0.3
         self.new_global_goal_received = True
 
@@ -113,6 +113,7 @@ class NN_tb3:
             "/subgoal", PoseStamped, self.cbGlobalGoal
         )
         self.sub_subgoal = rospy.Subscriber("/subgoal", PoseStamped, self.cbSubGoal)
+        self.result_sub = rospy.Subscriber("/cadrl_result", Bool, self.cbResult)
 
         # subgoals
         self.sub_goal = Vector3()
@@ -127,6 +128,10 @@ class NN_tb3:
         # control timer
         self.control_timer = rospy.Timer(rospy.Duration(0.01), self.cbControl)
         self.nn_timer = rospy.Timer(rospy.Duration(0.1), self.cbComputeActionGA3C)
+
+    def cbResult(self, msg):
+        print("got result stopping robot")
+        self.stop_moving_flag = True
 
     def cbGlobalGoal(self, msg):
         # self.stop_moving_flag = True
@@ -251,9 +256,9 @@ class NN_tb3:
 
     def cbControl(self, event):
 
-        print("callback control")
+        # print("callback control")
 
-        if False:
+        if self.stop_moving_flag:
             # print(self.goal.header.stamp)
             self.stop_moving()
             return
@@ -285,7 +290,7 @@ class NN_tb3:
 
         elif self.operation_mode.mode == self.operation_mode.SPIN_IN_PLACE:
             # print('Spinning in place.')
-            self.stop_moving_flag = False
+            # self.stop_moving_flag = False
             angle_to_goal = np.arctan2(
                 self.global_goal.pose.position.y - self.pose.pose.position.y,
                 self.global_goal.pose.position.x - self.pose.pose.position.x,
@@ -373,12 +378,13 @@ class NN_tb3:
         if host_agent.dist_to_goal < goal_tol:
             # current goal, reached, increment for next goal
             print("===============\ngoal reached: " + str([goal_x, goal_y]))
-            self.stop_moving_flag = True
+            # self.stop_moving_flag = True
             self.new_global_goal_received = False
             self.stop_moving()
             # self.goal_idx += 1
         else:
-            self.stop_moving_flag = False
+            pass
+            # self.stop_moving_flag = False
 
         # print(action)
         self.update_action(action)
