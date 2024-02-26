@@ -26,6 +26,8 @@ import util
 from nav_msgs.msg import Odometry, Path
 
 PED_RADIUS = 0.35
+
+
 # angle_1 - angle_2
 # contains direction in range [-3.14, 3.14]
 def find_angle_diff(angle_1, angle_2):
@@ -87,7 +89,7 @@ class NN_tb3:
 
         #! PUBLISHERS TOPICS
 
-        self.cmd_vel_topic = rospy.get_param("cmd_vel_topic", "/pepper/cmd_vel")
+        self.cmd_vel_topic = rospy.get_param("~cmd_vel_topic", "/pepper/cmd_vel")
 
         # self.pub_others = rospy.Publisher('~other_vels',Vector3,queue_size=1)
         self.pub_twist = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=1)
@@ -102,7 +104,7 @@ class NN_tb3:
         )
         #! SUBSCRIBERS TOPICS
 
-        self.odom_topic = rospy.get_param("odom_topic", "/pepper/odom_groundtruth")
+        self.odom_topic = rospy.get_param("~odom_topic", "/pepper/odom_groundtruth")
 
         self.sub_pose = rospy.Subscriber(self.odom_topic, Odometry, self.cbPose)
         self.sub_mode = rospy.Subscriber(
