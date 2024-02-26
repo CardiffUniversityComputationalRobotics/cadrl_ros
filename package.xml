@@ -27,6 +27,9 @@
   <exec_depend>visualization_msgs</exec_depend>
 
 
+  <!-- msgs deps -->
+  <depend>ford_msgs</depend>
+
   <!-- The export tag contains other, unspecified, tags -->
   <export>
     <!-- Other tools can request additional information be placed here -->
