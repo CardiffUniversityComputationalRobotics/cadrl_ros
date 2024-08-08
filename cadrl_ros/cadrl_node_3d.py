@@ -1,29 +1,21 @@
-#!/usr/bin/env python
-
-import rospy
-import sys
-from std_msgs.msg import Float32, ColorRGBA, Int32, String, Bool
-from geometry_msgs.msg import PoseStamped, Twist, Vector3, Point
-from ford_msgs.msg import PedTrajVec, NNActions, PlannerMode, Clusters
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import ColorRGBA, Bool
+from geometry_msgs.msg import PoseStamped, Twist, Vector3
+from ford_msgs.msg import PlannerMode, Clusters
 from visualization_msgs.msg import Marker, MarkerArray
+from nav_msgs.msg import Odometry
+from rclpy.duration import Duration
+
+from launch_ros.substitutions import FindPackageShare
 
 import numpy as np
-import numpy.matlib
-import pickle
 import copy
-import os
 import time
-import random
-import math
-
-import rospkg
 
 import network
-
-# import network_tf2 as network
 import agent
 import util
-from nav_msgs.msg import Odometry, Path
 
 PED_RADIUS = 0.35
 
@@ -36,13 +28,13 @@ def find_angle_diff(angle_1, angle_2):
     return angle_diff
 
 
-class NN_tb3:
+class NN_tb3(Node):
     def __init__(self, veh_name, veh_data, nn, actions):
+        super().__init__("nn_tb3")
 
         # tb3
 
         # canon
-        self.node_name = rospy.get_name()
         self.prev_other_agents_state = []
 
         # vehicle info
@@ -89,33 +81,43 @@ class NN_tb3:
 
         #! PUBLISHERS TOPICS
 
-        self.cmd_vel_topic = rospy.get_param("~cmd_vel_topic", "/pepper/cmd_vel")
-
-        # self.pub_others = rospy.Publisher('~other_vels',Vector3,queue_size=1)
-        self.pub_twist = rospy.Publisher(self.cmd_vel_topic, Twist, queue_size=1)
-        self.pub_pose_marker = rospy.Publisher("/pose_marker", Marker, queue_size=1)
-        self.pub_agent_marker = rospy.Publisher("/agent_marker", Marker, queue_size=1)
-        self.pub_agent_markers = rospy.Publisher(
-            "/agent_markers", MarkerArray, queue_size=1
+        self.declare_parameter("cmd_vel_topic", "/pepper/cmd_vel")
+        self.cmd_vel_topic = (
+            self.get_parameter("cmd_vel_topic").get_parameter_value().string_value
         )
-        self.pub_path_marker = rospy.Publisher("/path_marker", Marker, queue_size=1)
-        self.pub_goal_path_marker = rospy.Publisher(
-            "/goal_path_marker", Marker, queue_size=1
+
+        # self.pub_others = self.create_publisher(Vector3, '~other_vels', 1)
+        self.pub_twist = self.create_publisher(Twist, self.cmd_vel_topic, 1)
+        self.pub_pose_marker = self.create_publisher(Marker, "/pose_marker", 1)
+        self.pub_agent_marker = self.create_publisher(Marker, "/agent_marker", 1)
+        self.pub_agent_markers = self.create_publisher(MarkerArray, "/agent_markers", 1)
+        self.pub_path_marker = self.create_publisher(Marker, "/path_marker", 1)
+        self.pub_goal_path_marker = self.create_publisher(
+            Marker, "/goal_path_marker", 1
         )
         #! SUBSCRIBERS TOPICS
 
-        self.odom_topic = rospy.get_param("~odom_topic", "/pepper/odom_groundtruth")
+        self.declare_parameter("odom_topic", "/pepper/odom_groundtruth")
+        self.odom_topic = (
+            self.get_parameter("odom_topic").get_parameter_value().string_value
+        )
 
-        self.sub_pose = rospy.Subscriber(self.odom_topic, Odometry, self.cbPose)
-        self.sub_mode = rospy.Subscriber(
-            "/planner_fsm/mode", PlannerMode, self.cbPlannerMode
+        self.sub_pose = self.create_subscription(
+            Odometry, self.odom_topic, self.cbPose, 1
         )
-        # self.sub_global_goal = rospy.Subscriber('/move_base_simple/goal',PoseStamped, self.cbGlobalGoal)
-        self.sub_global_goal = rospy.Subscriber(
-            "/subgoal", PoseStamped, self.cbGlobalGoal
+        self.sub_mode = self.create_subscription(
+            PlannerMode, "/planner_fsm/mode", self.cbPlannerMode, 1
         )
-        self.sub_subgoal = rospy.Subscriber("/subgoal", PoseStamped, self.cbSubGoal)
-        self.result_sub = rospy.Subscriber("/cadrl_result", Bool, self.cbResult)
+        # self.sub_global_goal = self.create_subscription(PoseStamped, '/move_base_simple/goal', self.cbGlobalGoal, 1)
+        self.sub_global_goal = self.create_subscription(
+            PoseStamped, "/subgoal", self.cbGlobalGoal, 1
+        )
+        self.sub_subgoal = self.create_subscription(
+            PoseStamped, "/subgoal", self.cbSubGoal, 1
+        )
+        self.result_sub = self.create_subscription(
+            Bool, "/cadrl_result", self.cbResult, 1
+        )
 
         # subgoals
         self.sub_goal = Vector3()
@@ -123,13 +125,15 @@ class NN_tb3:
         self.use_clusters = True
         # self.use_clusters = False
         if self.use_clusters:
-            self.sub_clusters = rospy.Subscriber("/clusters", Clusters, self.cbClusters)
+            self.sub_clusters = self.create_subscription(
+                Clusters, "/clusters", self.cbClusters, 1
+            )
         else:
             print("no peds")
 
         # control timer
-        self.control_timer = rospy.Timer(rospy.Duration(0.01), self.cbControl)
-        self.nn_timer = rospy.Timer(rospy.Duration(0.1), self.cbComputeActionGA3C)
+        self.control_timer = self.create_timer(0.01, self.cbControl)
+        self.nn_timer = self.create_timer(0.1, self.cbComputeActionGA3C)
 
     def cbResult(self, msg):
         print("got result stopping robot")
@@ -256,7 +260,7 @@ class NN_tb3:
             return self.veh_data["pref_speed"]
         return v_max
 
-    def cbControl(self, event):
+    def cbControl(self):
 
         # print("callback control")
 
@@ -316,7 +320,7 @@ class NN_tb3:
             self.stop_moving()
             return
 
-    def cbComputeActionGA3C(self, event):
+    def cbComputeActionGA3C(self):
         if self.operation_mode.mode != self.operation_mode.NN or self.stop_moving_flag:
             # print 'Not in NN mode'
             # print(self.stop_moving_flag)
@@ -400,7 +404,7 @@ class NN_tb3:
 
         # Display GREEN DOT at NN subgoal
         marker = Marker()
-        marker.header.stamp = rospy.Time.now()
+        marker.header.stamp = self.get_clock().now().to_msg()
         marker.header.frame_id = "map"
         marker.ns = "subgoal"
         marker.id = 0
@@ -410,13 +414,13 @@ class NN_tb3:
         marker.pose.position.y = subgoal[1]
         marker.scale = Vector3(x=0.2, y=0.2, z=0)
         marker.color = ColorRGBA(r=0.0, g=0.0, b=0.0, a=1.0)
-        marker.lifetime = rospy.Duration(2.0)
+        marker.lifetime = Duration(seconds=2.0)
         self.pub_goal_path_marker.publish(marker)
 
         if subgoal_options is not None:
-            for i in xrange(len(subgoal_options)):
+            for i in range(len(subgoal_options)):
                 marker = Marker()
-                marker.header.stamp = rospy.Time.now()
+                marker.header.stamp = self.get_clock().now().to_msg()
                 marker.header.frame_id = "map"
                 marker.ns = "subgoal"
                 marker.id = i + 1
@@ -427,13 +431,13 @@ class NN_tb3:
                 marker.pose.position.y = subgoal_options[i][1]
                 marker.scale = Vector3(x=0.2, y=0.2, z=0.2)
                 marker.color = ColorRGBA(r=0.0, g=0.0, b=255, a=1.0)
-                marker.lifetime = rospy.Duration(1.0)
+                marker.lifetime = Duration(seconds=1.0)
                 self.pub_goal_path_marker.publish(marker)
 
     def visualize_pose(self, pos, orientation):
         # Yellow Box for Vehicle
         marker = Marker()
-        marker.header.stamp = rospy.Time.now()
+        marker.header.stamp = self.get_clock().now().to_msg()
         marker.header.frame_id = "map"
         marker.ns = "agent"
         marker.id = 0
@@ -443,12 +447,12 @@ class NN_tb3:
         marker.pose.orientation = orientation
         marker.scale = Vector3(x=0.7, y=0.42, z=1)
         marker.color = ColorRGBA(r=1.0, g=1.0, a=1.0)
-        marker.lifetime = rospy.Duration(1.0)
+        marker.lifetime = Duration(seconds=1.0)
         self.pub_pose_marker.publish(marker)
 
         # Red track for trajectory over time
         marker = Marker()
-        marker.header.stamp = rospy.Time.now()
+        marker.header.stamp = self.get_clock().now().to_msg()
         marker.header.frame_id = "map"
         marker.ns = "agent"
         marker.id = self.num_poses
@@ -458,7 +462,7 @@ class NN_tb3:
         marker.pose.orientation = orientation
         marker.scale = Vector3(x=0.2, y=0.2, z=0.2)
         marker.color = ColorRGBA(r=1.0, a=1.0)
-        marker.lifetime = rospy.Duration(10.0)
+        marker.lifetime = Duration(seconds=10.0)
         self.pub_pose_marker.publish(marker)
 
         # print marker
@@ -468,7 +472,7 @@ class NN_tb3:
         for i in range(len(xs)):
             # Orange box for other agent
             marker = Marker()
-            marker.header.stamp = rospy.Time.now()
+            marker.header.stamp = self.get_clock().now().to_msg()
             marker.header.frame_id = "map"
             marker.ns = "other_agent"
             marker.id = labels[i]
@@ -483,7 +487,7 @@ class NN_tb3:
             #     marker.color = ColorRGBA(r=0.5,g=0.4,a=1.0)
             # else:
             marker.color = ColorRGBA(r=1.0, g=0.4, a=1.0)
-            marker.lifetime = rospy.Duration(0.5)
+            marker.lifetime = Duration(seconds=0.5)
             markers.markers.append(marker)
 
         self.pub_agent_markers.publish(markers)
@@ -491,7 +495,7 @@ class NN_tb3:
     def visualize_action(self, use_d_min):
         # Display BLUE ARROW from current position to NN desired position
         marker = Marker()
-        marker.header.stamp = rospy.Time.now()
+        marker.header.stamp = self.get_clock().now().to_msg()
         marker.header.frame_id = "map"
         marker.ns = "path_arrow"
         marker.id = 0
@@ -501,12 +505,12 @@ class NN_tb3:
         marker.points.append(self.desired_position.pose.position)
         marker.scale = Vector3(x=0.1, y=0.2, z=0.2)
         marker.color = ColorRGBA(b=1.0, a=1.0)
-        marker.lifetime = rospy.Duration(0.1)
+        marker.lifetime = Duration(seconds=0.1)
         self.pub_goal_path_marker.publish(marker)
 
         # Display BLUE DOT at NN desired position
         marker = Marker()
-        marker.header.stamp = rospy.Time.now()
+        marker.header.stamp = self.get_clock().now().to_msg()
         marker.header.frame_id = "map"
         marker.ns = "path_trail"
         marker.id = self.num_poses
@@ -515,29 +519,25 @@ class NN_tb3:
         marker.pose.position = copy.deepcopy(self.desired_position.pose.position)
         marker.scale = Vector3(x=0.2, y=0.2, z=0.4)
         marker.color = ColorRGBA(b=1.0, a=0.1)
-        marker.lifetime = rospy.Duration(100)
+        marker.lifetime = Duration(seconds=100)
         if self.desired_action[0] == 0.0:
             marker.pose.position.x += 2.0 * np.cos(self.desired_action[1])
             marker.pose.position.y += 2.0 * np.sin(self.desired_action[1])
         self.pub_goal_path_marker.publish(marker)
         # print marker
 
-    def on_shutdown(self):
-        rospy.loginfo("[%s] Shutting down." % (self.node_name))
-        self.stop_moving()
-        rospy.loginfo("Stopped %s's velocity." % (self.veh_name))
 
+def main(args=None):
+    rclpy.init(args=args)
 
-def run():
-    rospack = rospkg.RosPack()
+    cadrl_ros_dir = FindPackageShare("cadrl_ros").find("cadrl_ros")
 
     a = network.Actions()
     actions = a.actions
     num_actions = a.num_actions
     nn = network.NetworkVP_rnn(network.Config.DEVICE, "network", num_actions)
-    nn.simple_load(rospack.get_path("cadrl_ros") + "/checkpoints/network_01900000")
+    nn.simple_load(cadrl_ros_dir + "/checkpoints/network_01900000")
 
-    rospy.init_node("nn_tb3", anonymous=False)
     veh_name = "tb3_01"
     pref_speed = 0.34
     # pref_speed = 0.3
@@ -552,12 +552,13 @@ def run():
 
     print("==================================\ncadrl node started")
     print("tb3 speed:", pref_speed, "\n==================================")
-    rospy.sleep(5)
+    time.sleep(5)
     nn_tb3 = NN_tb3(veh_name, veh_data, nn, actions)
-    rospy.on_shutdown(nn_tb3.on_shutdown)
 
-    rospy.spin()
+    rclpy.spin(nn_tb3)
+    nn_tb3.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == "__main__":
-    run()
+    main()

@@ -18,6 +18,9 @@ setup(
     license="MIT",
     tests_require=["pytest"],
     entry_points={
-        "console_scripts": [],
+        "console_scripts": [
+            "cadrl_node_3d = cadrl_ros.cadrl_node_3d:main",
+            "ped_to_ford = cadrl_ros.ped_to_ford:main",
+        ],
     },
 )
