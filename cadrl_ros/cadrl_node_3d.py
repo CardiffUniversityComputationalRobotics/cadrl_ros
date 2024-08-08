@@ -13,9 +13,8 @@ import numpy as np
 import copy
 import time
 
-import network
-import agent
-import util
+from cadrl_ros import network, agent, util
+
 
 PED_RADIUS = 0.35
 
