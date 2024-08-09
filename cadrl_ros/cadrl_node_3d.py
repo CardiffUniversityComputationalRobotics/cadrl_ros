@@ -411,9 +411,9 @@ class NN_tb3(Node):
         marker.action = marker.ADD
         marker.pose.position.x = subgoal[0]
         marker.pose.position.y = subgoal[1]
-        marker.scale = Vector3(x=0.2, y=0.2, z=0)
+        marker.scale = Vector3(x=0.2, y=0.2, z=0.0)
         marker.color = ColorRGBA(r=0.0, g=0.0, b=0.0, a=1.0)
-        marker.lifetime = Duration(seconds=2.0)
+        # marker.lifetime = Duration(seconds=2.0)
         self.pub_goal_path_marker.publish(marker)
 
         if subgoal_options is not None:
@@ -430,7 +430,7 @@ class NN_tb3(Node):
                 marker.pose.position.y = subgoal_options[i][1]
                 marker.scale = Vector3(x=0.2, y=0.2, z=0.2)
                 marker.color = ColorRGBA(r=0.0, g=0.0, b=255, a=1.0)
-                marker.lifetime = Duration(seconds=1.0)
+                # marker.lifetime = Duration(seconds=1.0)
                 self.pub_goal_path_marker.publish(marker)
 
     def visualize_pose(self, pos, orientation):
@@ -444,9 +444,9 @@ class NN_tb3(Node):
         marker.action = marker.ADD
         marker.pose.position = pos
         marker.pose.orientation = orientation
-        marker.scale = Vector3(x=0.7, y=0.42, z=1)
+        marker.scale = Vector3(x=0.7, y=0.42, z=1.0)
         marker.color = ColorRGBA(r=1.0, g=1.0, a=1.0)
-        marker.lifetime = Duration(seconds=1.0)
+        # marker.lifetime = Duration(seconds=1.0)
         self.pub_pose_marker.publish(marker)
 
         # Red track for trajectory over time
@@ -461,7 +461,7 @@ class NN_tb3(Node):
         marker.pose.orientation = orientation
         marker.scale = Vector3(x=0.2, y=0.2, z=0.2)
         marker.color = ColorRGBA(r=1.0, a=1.0)
-        marker.lifetime = Duration(seconds=10.0)
+        # marker.lifetime = Duration(seconds=10.0)
         self.pub_pose_marker.publish(marker)
 
         # print marker
@@ -480,13 +480,13 @@ class NN_tb3(Node):
             marker.pose.position.x = xs[i]
             marker.pose.position.y = ys[i]
             # marker.pose.orientation = orientation
-            marker.scale = Vector3(x=2 * radii[i], y=2 * radii[i], z=1)
+            marker.scale = Vector3(x=2 * radii[i], y=2 * radii[i], z=1.0)
             # if labels[i] <= 23: # for static map
             #     # print sm
             #     marker.color = ColorRGBA(r=0.5,g=0.4,a=1.0)
             # else:
             marker.color = ColorRGBA(r=1.0, g=0.4, a=1.0)
-            marker.lifetime = Duration(seconds=0.5)
+            # marker.lifetime = Duration(seconds=0.5)
             markers.markers.append(marker)
 
         self.pub_agent_markers.publish(markers)
@@ -504,7 +504,7 @@ class NN_tb3(Node):
         marker.points.append(self.desired_position.pose.position)
         marker.scale = Vector3(x=0.1, y=0.2, z=0.2)
         marker.color = ColorRGBA(b=1.0, a=1.0)
-        marker.lifetime = Duration(seconds=0.1)
+        # marker.lifetime = Duration(seconds=0.1)
         self.pub_goal_path_marker.publish(marker)
 
         # Display BLUE DOT at NN desired position
@@ -518,7 +518,7 @@ class NN_tb3(Node):
         marker.pose.position = copy.deepcopy(self.desired_position.pose.position)
         marker.scale = Vector3(x=0.2, y=0.2, z=0.4)
         marker.color = ColorRGBA(b=1.0, a=0.1)
-        marker.lifetime = Duration(seconds=100)
+        # marker.lifetime = Duration(seconds=100)
         if self.desired_action[0] == 0.0:
             marker.pose.position.x += 2.0 * np.cos(self.desired_action[1])
             marker.pose.position.y += 2.0 * np.sin(self.desired_action[1])

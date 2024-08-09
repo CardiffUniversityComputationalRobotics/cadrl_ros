@@ -1,0 +1,2 @@
+model_checkpoint_path: "mig_network_01900000-1"
+all_model_checkpoint_paths: "mig_network_01900000-1"

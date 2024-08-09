@@ -3,6 +3,7 @@ import re
 import numpy as np
 import tensorflow as tf
 import time
+from tensorflow.keras import layers
 
 
 class Actions:
@@ -35,99 +36,59 @@ class Actions:
         self.num_actions = len(self.actions)
 
 
-class NetworkVPCore(object):
+class NetworkVPCore(tf.Module):
     def __init__(self, device, model_name, num_actions):
         self.device = device
         self.model_name = model_name
         self.num_actions = num_actions
+        self.build_model()
 
-        self.graph = tf.Graph()
-        with self.graph.as_default() as g:
-            with tf.device(self.device):
-                self._create_graph()
-
-                self.sess = tf.Session(
-                    graph=self.graph,
-                    config=tf.ConfigProto(
-                        allow_soft_placement=True,
-                        log_device_placement=False,
-                        gpu_options=tf.GPUOptions(allow_growth=True),
-                    ),
-                )
-                self.sess.run(tf.global_variables_initializer())
-
-                vars = tf.global_variables()
-                self.saver = tf.train.Saver(
-                    {var.name: var for var in vars}, max_to_keep=0
-                )
-
-    def _create_graph_inputs(self):
-        self.x = tf.placeholder(tf.float32, [None, Config.NN_INPUT_SIZE], name="X")
-
-    def _create_graph_outputs(self):
-        # FCN
-        self.fc1 = tf.layers.dense(
-            inputs=self.final_flat,
-            units=256,
-            use_bias=True,
-            activation=tf.nn.relu,
-            name="fullyconnected1",
+    def build_model(self):
+        self.x = tf.keras.Input(
+            shape=(Config.NN_INPUT_SIZE,), dtype=tf.float32, name="X"
         )
 
-        # Cost: p
-        self.logits_p = tf.layers.dense(
-            inputs=self.fc1, units=self.num_actions, name="logits_p", activation=None
-        )
-        self.softmax_p = (tf.nn.softmax(self.logits_p) + Config.MIN_POLICY) / (
+        # Define layers
+        self.fc1 = layers.Dense(256, activation="relu", name="fullyconnected1")(self.x)
+
+        self.logits_p = layers.Dense(
+            self.num_actions, activation=None, name="logits_p"
+        )(self.fc1)
+        softmax_layer = layers.Softmax()
+        self.softmax_p = (softmax_layer(self.logits_p) + Config.MIN_POLICY) / (
             1.0 + Config.MIN_POLICY * self.num_actions
         )
 
-        # Cost: v
-        self.logits_v = tf.squeeze(
-            tf.layers.dense(
-                inputs=self.fc1,
-                units=1,
-                use_bias=True,
-                activation=None,
-                name="logits_v",
-            ),
-            axis=[1],
+        self.logits_v = layers.Dense(1, activation=None, name="logits_v")(self.fc1)
+
+        self.logits_v = layers.Lambda(lambda x: tf.squeeze(x, axis=1))(self.logits_v)
+
+        # Create the model
+        self.model = tf.keras.Model(
+            inputs=self.x, outputs=[self.softmax_p, self.logits_v]
         )
 
     def predict_p(self, x):
-        return self.sess.run(self.softmax_p, feed_dict={self.x: x})
+        # Forward pass through the model to get predictions
+        return self.model(x)[0]
 
     def predict_v(self, x):
-        return self.sess.run(self.logits_v, feed_dict={self.x: x})
+        return self.model(x)[1]
 
-    def get_lstm_output(self, x):
-        return self.sess.run(self.rnn_output, feed_dict={self.x: x})
-
-    def predict_p_from_lstm_output(self, host_agent_vec, lstm_output):
-        return self.sess.run(
-            nn.softmax_p,
-            feed_dict={
-                self.host_agent_vec: host_agent_vec,
-                self.layer1_input: layer1_input,
-            },
-        )
-
-    def simple_load(self, filename=None):
-        if filename is None:
-            print("[network.py] Didn't define simple_load filename")
-        self.saver.restore(self.sess, filename)
+    def simple_load(self, checkpoint_dir):
+        checkpoint = tf.train.Checkpoint(model=self)
+        checkpoint.restore(tf.train.latest_checkpoint(checkpoint_dir)).expect_partial()
 
 
 class NetworkVP_rnn(NetworkVPCore):
     def __init__(self, device, model_name, num_actions):
-        super(self.__class__, self).__init__(device, model_name, num_actions)
+        super().__init__(device, model_name, num_actions)
 
-    def _create_graph(self):
-        # Use shared parent class to construct graph inputs
-        self._create_graph_inputs()
+    def build_model(self):
+        super().build_model()
 
         if Config.USE_REGULARIZATION:
-            regularizer = tf.contrib.layers.l2_regularizer(scale=0.0)
+            regularizer = tf.keras.regularizers.l2(0.0)
         else:
             regularizer = None
 
@@ -141,44 +102,50 @@ class NetworkVP_rnn(NetworkVPCore):
         if Config.MULTI_AGENT_ARCH == "RNN":
             num_hidden = 64
             max_length = Config.MAX_NUM_OTHER_AGENTS_OBSERVED
-            self.num_other_agents = self.x[:, 0]
-            self.host_agent_vec = self.x_normalized[
-                :,
-                Config.FIRST_STATE_INDEX : Config.HOST_AGENT_STATE_SIZE
-                + Config.FIRST_STATE_INDEX :,
-            ]
-            self.other_agent_vec = self.x_normalized[
-                :, Config.HOST_AGENT_STATE_SIZE + Config.FIRST_STATE_INDEX :
-            ]
-            self.other_agent_seq = tf.reshape(
-                self.other_agent_vec,
-                [-1, max_length, Config.OTHER_AGENT_FULL_OBSERVATION_LENGTH],
+            self.num_other_agents = layers.Lambda(lambda x: x[:, 0])(self.x)
+            self.host_agent_vec = layers.Lambda(
+                lambda x: x[
+                    :,
+                    Config.FIRST_STATE_INDEX : Config.HOST_AGENT_STATE_SIZE
+                    + Config.FIRST_STATE_INDEX,
+                ]
+            )(self.x_normalized)
+            self.other_agent_vec = layers.Lambda(
+                lambda x: x[
+                    :, Config.HOST_AGENT_STATE_SIZE + Config.FIRST_STATE_INDEX :
+                ]
+            )(self.x_normalized)
+            self.other_agent_seq = layers.Lambda(
+                lambda x: tf.reshape(
+                    x, [-1, max_length, Config.OTHER_AGENT_FULL_OBSERVATION_LENGTH]
+                )
+            )(self.other_agent_vec)
+
+            # Use a Lambda layer to apply sequence masking within Keras
+            mask = layers.Lambda(lambda x: tf.sequence_mask(x, maxlen=max_length))(
+                self.num_other_agents
             )
-            self.rnn_outputs, self.rnn_state = tf.nn.dynamic_rnn(
-                tf.contrib.rnn.LSTMCell(num_hidden),
-                self.other_agent_seq,
-                dtype=tf.float32,
-                sequence_length=self.num_other_agents,
+
+            rnn_layer = tf.keras.layers.LSTM(num_hidden, return_state=True)
+            self.rnn_state = rnn_layer(self.other_agent_seq, mask=mask)
+            self.rnn_output = self.rnn_state[0]  # `h` state of LSTM
+            # Replace the `tf.concat` with a Keras Lambda layer
+            self.layer1_input = layers.Lambda(lambda x: tf.concat(x, axis=1))(
+                [self.host_agent_vec, self.rnn_output]
             )
-            self.rnn_output = self.rnn_state.h
-            self.layer1_input = tf.concat(
-                [self.host_agent_vec, self.rnn_output], 1, name="layer1_input"
-            )
-            self.layer1 = tf.layers.dense(
-                inputs=self.layer1_input,
-                units=256,
+            self.layer1 = tf.keras.layers.Dense(
+                256,
                 activation=tf.nn.relu,
                 kernel_regularizer=regularizer,
                 name="layer1",
-            )
+            )(self.layer1_input)
 
-        self.layer2 = tf.layers.dense(
-            inputs=self.layer1, units=256, activation=tf.nn.relu, name="layer2"
+        self.layer2 = tf.keras.layers.Dense(256, activation=tf.nn.relu, name="layer2")(
+            self.layer1
         )
-        self.final_flat = tf.contrib.layers.flatten(self.layer2)
+        self.final_flat = tf.keras.layers.Flatten()(self.layer2)
 
-        # Use shared parent class to construct graph outputs/objectives
-        self._create_graph_outputs()
+        super().build_model()
 
 
 class Config:
@@ -264,7 +231,7 @@ if __name__ == "__main__":
     actions = Actions().actions
     num_actions = Actions().num_actions
     nn = NetworkVP_rnn(Config.DEVICE, "network", num_actions)
-    nn.simple_load()
+    nn.simple_load("path_to_checkpoints")
 
     obs = np.zeros((Config.FULL_STATE_LENGTH))
     obs = np.expand_dims(obs, axis=0)
@@ -277,7 +244,7 @@ if __name__ == "__main__":
         obs[0, 2] = np.random.uniform(-np.pi, np.pi)  # heading to goal
         obs[0, 3] = np.random.uniform(0.2, 2.0)  # pref speed
         obs[0, 4] = np.random.uniform(0.2, 1.5)  # radius
-        predictions = nn.predict_p(obs, None)[0]
+        predictions = nn.predict_p(obs)[0]
     t_end = time.time()
     print("avg query time:", (t_end - t_start) / num_queries)
     print("total time:", t_end - t_start)
