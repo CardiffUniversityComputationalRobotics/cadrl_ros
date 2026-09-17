@@ -28,6 +28,8 @@
 
   <!-- msgs deps -->
   <depend>ford_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>esc_move_base_msgs</depend>
 
   <export>
     <build_type>ament_python</build_type>

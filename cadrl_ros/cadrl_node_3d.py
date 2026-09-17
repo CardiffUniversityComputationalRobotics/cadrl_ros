@@ -5,6 +5,7 @@ from geometry_msgs.msg import PoseStamped, Twist, Vector3
 from ford_msgs.msg import PlannerMode, Clusters
 from visualization_msgs.msg import Marker, MarkerArray
 from nav_msgs.msg import Odometry
+from esc_move_base_msgs.msg import Path2D
 from rclpy.duration import Duration
 
 from launch_ros.substitutions import FindPackageShare
@@ -27,6 +28,22 @@ def find_angle_diff(angle_1, angle_2):
     return angle_diff
 
 
+def waypoints_ahead(path, x, y, tolerance):
+    """Slice a start-to-goal plan down to the part still ahead of (x, y).
+
+    Walks the plan backwards from the goal and stops at the first waypoint
+    within `tolerance` of the robot, so the result starts just ahead of the
+    robot and ends at the goal.
+    """
+    ahead = []
+    for pos in reversed(path):
+        if np.hypot(pos.x - x, pos.y - y) <= tolerance:
+            break
+        ahead.append([pos.x, pos.y])
+    ahead.reverse()
+    return ahead
+
+
 class NN_tb3(Node):
     def __init__(self, veh_name, veh_data, nn, actions):
         super().__init__("nn_tb3")
@@ -39,6 +56,11 @@ class NN_tb3(Node):
         # vehicle info
         self.veh_name = veh_name
         self.veh_data = veh_data
+        self.declare_parameter("robot_speed", veh_data["pref_speed"])
+        self.veh_data["pref_speed"] = (
+            self.get_parameter("robot_speed").get_parameter_value().double_value
+        )
+        self.get_logger().info(f"preferred speed: {self.veh_data['pref_speed']}")
 
         # neural network
         self.nn = nn
@@ -94,6 +116,10 @@ class NN_tb3(Node):
         self.pub_goal_path_marker = self.create_publisher(
             Marker, "/goal_path_marker", 1
         )
+        self.pub_waypoints = self.create_publisher(
+            MarkerArray, "/cadrl_waypoints", 1
+        )
+        self.pub_goal_reached = self.create_publisher(Bool, "/goal_reached", 1)
         #! SUBSCRIBERS TOPICS
 
         self.declare_parameter("odom_topic", "/pepper/odom_groundtruth")
@@ -107,19 +133,46 @@ class NN_tb3(Node):
         self.sub_mode = self.create_subscription(
             PlannerMode, "/planner_fsm/mode", self.cbPlannerMode, 1
         )
-        # self.sub_global_goal = self.create_subscription(PoseStamped, '/move_base_simple/goal', self.cbGlobalGoal, 1)
+
+        self.declare_parameter("goal_topic", "/goal_pose")
+        self.declare_parameter(
+            "goal_path_topic", "/esc_move_base_planner/solution_path"
+        )
+        self.declare_parameter("stop_motion_topic", "/stop_motion")
+        self.declare_parameter("goal_tolerance", 1.0)
+        self.declare_parameter("subgoal_tolerance", 0.6)
+
+        self.goal_tolerance = (
+            self.get_parameter("goal_tolerance").get_parameter_value().double_value
+        )
+        self.subgoal_tolerance = (
+            self.get_parameter("subgoal_tolerance").get_parameter_value().double_value
+        )
+
         self.sub_global_goal = self.create_subscription(
-            PoseStamped, "/subgoal", self.cbGlobalGoal, 1
+            PoseStamped,
+            self.get_parameter("goal_topic").get_parameter_value().string_value,
+            self.cbGlobalGoal,
+            1,
         )
-        self.sub_subgoal = self.create_subscription(
-            PoseStamped, "/subgoal", self.cbSubGoal, 1
+        self.sub_global_plan = self.create_subscription(
+            Path2D,
+            self.get_parameter("goal_path_topic").get_parameter_value().string_value,
+            self.cbGlobalPlan,
+            1,
         )
-        self.result_sub = self.create_subscription(
-            Bool, "/cadrl_result", self.cbResult, 1
+        self.sub_stop_motion = self.create_subscription(
+            Bool,
+            self.get_parameter("stop_motion_topic").get_parameter_value().string_value,
+            self.cbStopMotion,
+            1,
         )
 
         # subgoals
         self.sub_goal = Vector3()
+        self.waypoints = []
+        self.goal_received = False
+        self.goal_reached_published = False
 
         self.use_clusters = True
         # self.use_clusters = False
@@ -133,30 +186,67 @@ class NN_tb3(Node):
         # control timer
         self.control_timer = self.create_timer(0.01, self.cbControl)
         self.nn_timer = self.create_timer(0.1, self.cbComputeActionGA3C)
+        # the old subgoal publisher re-armed the heading check once a second,
+        # which is what keeps the robot pointing along the plan
+        self.realign_timer = self.create_timer(1.0, self.cbRealign)
 
-    def cbResult(self, msg):
-        print("got result stopping robot")
-        self.stop_moving_flag = True
+    def cbRealign(self):
+        """Re-check the heading against the subgoal, as the old client did at 1 Hz."""
+        if not self.goal_received or self.stop_moving_flag or self.num_poses == 0:
+            return
+
+        x = self.pose.pose.position.x
+        y = self.pose.pose.position.y
+        bearing = find_angle_diff(
+            np.arctan2(self.sub_goal.y - y, self.sub_goal.x - x), self.psi
+        )
+        self.get_logger().info(
+            f"robot ({x:.2f}, {y:.2f}) psi {self.psi:.2f} -> "
+            f"subgoal ({self.sub_goal.x:.2f}, {self.sub_goal.y:.2f}) "
+            f"at {np.hypot(self.sub_goal.x - x, self.sub_goal.y - y):.2f} m, "
+            f"bearing {bearing:.2f} rad, {len(self.waypoints)} waypoints left, "
+            f"mode {self.operation_mode.mode}, action {self.desired_action}"
+        )
+
+        self.operation_mode.mode = self.operation_mode.SPIN_IN_PLACE
+
+    def cbStopMotion(self, msg):
+        if msg.data:
+            self.get_logger().info("stop motion requested, stopping robot")
+            self.stop_moving_flag = True
+            self.goal_received = False
+            self.waypoints = []
+            self.stop_moving()
 
     def cbGlobalGoal(self, msg):
-        # self.stop_moving_flag = True
-        # self.new_global_goal_received = True
         self.global_goal = msg
         self.operation_mode.mode = self.operation_mode.SPIN_IN_PLACE
-        self.goal.pose.position.x = msg.pose.position.x
-        self.goal.pose.position.y = msg.pose.position.y
-        self.goal.header = msg.header
+        self.goal = msg
 
-        # reset subgoals
-        # print("new goal: "+str([self.goal.pose.position.x,self.goal.pose.position.y]))
-
-    def cbSubGoal(self, msg):
-        print("goal subgoal")
-
-        self.stop_moving_flag = False
+        self.waypoints = []
         self.sub_goal.x = msg.pose.position.x
         self.sub_goal.y = msg.pose.position.y
-        # print("new subgoal: "+str(self.sub_goal))
+
+        self.goal_received = True
+        self.goal_reached_published = False
+        # stay put until the planner delivers a path: cadrl only avoids people,
+        # so driving straight at the global goal would plough into walls
+        self.stop_moving_flag = True
+        self.get_logger().info(
+            f"new goal: {[msg.pose.position.x, msg.pose.position.y]}"
+        )
+
+    def cbGlobalPlan(self, msg):
+        if not self.goal_received:
+            return
+        self.waypoints = waypoints_ahead(
+            msg.waypoints,
+            self.pose.pose.position.x,
+            self.pose.pose.position.y,
+            self.subgoal_tolerance,
+        )
+        if self.waypoints and not self.goal_reached_published:
+            self.stop_moving_flag = False
 
     def cbPlannerMode(self, msg):
         self.operation_mode = msg
@@ -268,7 +358,6 @@ class NN_tb3(Node):
             self.stop_moving()
             return
         elif self.operation_mode.mode == self.operation_mode.NN:
-            print("moving operation to goal")
             desired_yaw = self.desired_action[1]
             yaw_error = desired_yaw - self.psi
             if abs(yaw_error) > np.pi:
@@ -297,14 +386,13 @@ class NN_tb3(Node):
             # print('Spinning in place.')
             # self.stop_moving_flag = False
             angle_to_goal = np.arctan2(
-                self.global_goal.pose.position.y - self.pose.pose.position.y,
-                self.global_goal.pose.position.x - self.pose.pose.position.x,
+                self.sub_goal.y - self.pose.pose.position.y,
+                self.sub_goal.x - self.pose.pose.position.x,
             )
-            global_yaw_error = self.psi - angle_to_goal
+            global_yaw_error = find_angle_diff(self.psi, angle_to_goal)
             if abs(global_yaw_error) > 0.5:
-                print("spinning in place")
                 vx = 0.0
-                vw = 1.0
+                vw = -np.sign(global_yaw_error) * 1.0
                 twist = Twist()
                 twist.angular.z = vw
                 twist.linear.x = vx
@@ -319,7 +407,43 @@ class NN_tb3(Node):
             self.stop_moving()
             return
 
+    def updateSubGoal(self):
+        """Advance along the global plan and report when the goal is reached."""
+        if not self.goal_received or self.stop_moving_flag or self.num_poses == 0:
+            return
+
+        x = self.pose.pose.position.x
+        y = self.pose.pose.position.y
+
+        while (
+            self.waypoints
+            and np.hypot(self.waypoints[0][0] - x, self.waypoints[0][1] - y)
+            < self.subgoal_tolerance
+        ):
+            self.waypoints.pop(0)
+
+        if self.waypoints:
+            self.sub_goal.x, self.sub_goal.y = self.waypoints[0]
+            self.visualize_waypoints()
+        else:
+            # no plan left, drive straight at the global goal
+            self.sub_goal.x = self.global_goal.pose.position.x
+            self.sub_goal.y = self.global_goal.pose.position.y
+
+        dist_to_goal = np.hypot(
+            self.global_goal.pose.position.x - x,
+            self.global_goal.pose.position.y - y,
+        )
+        if dist_to_goal <= self.goal_tolerance and not self.goal_reached_published:
+            self.get_logger().info("global goal reached")
+            self.goal_reached_published = True
+            self.stop_moving_flag = True
+            self.stop_moving()
+            self.pub_goal_reached.publish(Bool(data=True))
+
     def cbComputeActionGA3C(self):
+        self.updateSubGoal()
+
         if self.operation_mode.mode != self.operation_mode.NN or self.stop_moving_flag:
             # print 'Not in NN mode'
             # print(self.stop_moving_flag)
@@ -394,9 +518,25 @@ class NN_tb3(Node):
         # print(action)
         self.update_action(action)
 
-    def update_subgoal(self, subgoal):
-        self.goal.pose.position.x = subgoal[0]
-        self.goal.pose.position.y = subgoal[1]
+    def visualize_waypoints(self):
+        markers = MarkerArray()
+        for i, waypoint in enumerate(self.waypoints):
+            marker = Marker()
+            marker.header.stamp = self.get_clock().now().to_msg()
+            marker.header.frame_id = "map"
+            marker.ns = "cadrl_waypoints"
+            marker.id = i
+            marker.type = marker.SPHERE
+            marker.action = marker.ADD
+            marker.pose.position.x = waypoint[0]
+            marker.pose.position.y = waypoint[1]
+            marker.pose.position.z = 0.2
+            marker.pose.orientation.w = 1.0
+            marker.scale = Vector3(x=0.1, y=0.1, z=0.1)
+            marker.color = ColorRGBA(g=1.0, a=1.0)
+            marker.lifetime = Duration(seconds=1.0).to_msg()
+            markers.markers.append(marker)
+        self.pub_waypoints.publish(markers)
 
     def visualize_subgoal(self, subgoal, subgoal_options=None):
         markers = MarkerArray()
@@ -538,19 +678,16 @@ def main(args=None):
     nn.simple_load(cadrl_ros_dir + "/checkpoints/network_01900000")
 
     veh_name = "tb3_01"
-    pref_speed = 0.34
-    # pref_speed = 0.3
     veh_data = {
         "goal": np.zeros((2,)),
         "radius": 0.3,
-        "pref_speed": pref_speed,
+        "pref_speed": 0.34,  # overridden by the robot_speed parameter
         "kw": 10.0,
         "kp": 1.0,
         "name": "tb3_01",
     }
 
     print("==================================\ncadrl node started")
-    print("tb3 speed:", pref_speed, "\n==================================")
     time.sleep(5)
     nn_tb3 = NN_tb3(veh_name, veh_data, nn, actions)
 
